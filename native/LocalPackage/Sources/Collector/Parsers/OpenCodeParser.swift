@@ -48,6 +48,53 @@ func discoverOpenCodeDBs(_ root: String) -> [String] {
 /// back to the legacy message-only query when `session` is missing.
 func parseOpenCodeSQLite(_ path: String) -> [UsageMessage] {
     guard let db = SQLiteDatabase(readOnlyAtPath: path) else { return [] }
+    // OpenCode's v2 store (late 2026) replaced `message` with
+    // `session_message`; read it, then the older table if it's still there.
+    var out = parseOpenCodeV2Messages(db)
+    out.append(contentsOf: parseOpenCodeLegacyMessages(db))
+    return out
+}
+
+/// OpenCode v2 store: `session_message(id, session_id, type, data)`, one row
+/// per event. Assistant rows carry `model {id, providerID}`, `tokens`, `cost`
+/// and `time.created`; there is no `role` field.
+func parseOpenCodeV2Messages(_ db: SQLiteDatabase) -> [UsageMessage] {
+    let query = "SELECT id, data FROM session_message WHERE type = 'assistant' ORDER BY id"
+    guard let stmt = db.prepare(query) else { return [] }
+    var out: [UsageMessage] = []
+    while stmt.step() {
+        guard let id = stmt.text(0), let data = stmt.text(1) else { continue }
+        guard var msg = parseOpenCodeV2JSON(data) else { continue }
+        msg.dedupKey = "opencode:\(id)"
+        out.append(msg)
+    }
+    return out
+}
+
+func parseOpenCodeV2JSON(_ data: String) -> UsageMessage? {
+    guard let value = JSONValue.parse(data) else { return nil }
+    guard let tokens = value["tokens"], let modelInfo = value["model"] else { return nil }
+    guard let model = stringValue(modelInfo["id"]) ?? stringValue(modelInfo) else { return nil }
+    let provider = stringValue(modelInfo["providerID"]) ?? inferProvider(model)
+    let cache = tokens["cache"] ?? .null
+    let ts =
+        (value["time"]?["created"]).flatMap { timestampMsFromValue($0) }
+        ?? (value["time"]?["completed"]).flatMap { timestampMsFromValue($0) }
+        ?? nowMs()
+    return UsageMessage(
+        client: "opencode", modelId: model, providerId: provider,
+        timestampMs: ts,
+        tokens: TokenBreakdown(
+            input: max(i64Value(tokens["input"]) ?? 0, 0),
+            output: max(i64Value(tokens["output"]) ?? 0, 0),
+            cacheRead: max(i64Value(cache["read"]) ?? 0, 0),
+            cacheWrite: max(i64Value(cache["write"]) ?? 0, 0),
+            reasoning: max(i64Value(tokens["reasoning"]) ?? 0, 0)),
+        cost: f64Value(value["cost"]) ?? 0.0)
+}
+
+/// The pre-v2 `message` table (nothing when it doesn't exist).
+func parseOpenCodeLegacyMessages(_ db: SQLiteDatabase) -> [UsageMessage] {
     let queryWithSession = """
         SELECT m.id, m.session_id, m.data
         FROM message m
