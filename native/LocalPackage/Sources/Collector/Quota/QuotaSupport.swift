@@ -225,8 +225,15 @@ func quotaHomeDirectory() -> String? {
     return (home?.isEmpty == false) ? home : nil
 }
 
-/// `codex_home()`: $CODEX_HOME, else ~/.codex.
+/// Lets one quota fetch read a different Codex account (another CODEX_HOME)
+/// without touching the process environment.
+public enum CodexHomeOverride {
+    @TaskLocal public static var home: URL?
+}
+
+/// `codex_home()`: the task-local override, else $CODEX_HOME, else ~/.codex.
 func codexHome() -> URL {
+    if let override = CodexHomeOverride.home { return override }
     let env = ProcessInfo.processInfo.environment["CODEX_HOME"]
     if let env, !env.isEmpty {
         return URL(fileURLWithPath: env)

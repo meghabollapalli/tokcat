@@ -24,7 +24,21 @@ public enum AgentQuota {
         async let cursor: AgentUsageSnapshot? = CursorQuotaProvider.isConfigured
             ? CursorQuotaProvider.fetch() : nil
 
-        let agents = await [codex, claude, grok, cursor].compactMap { $0 }
+        // Other Codex accounts (TOKCAT_CODEX_HOMES, path-separated), each
+        // reported as its own "codex" snapshot with source "oauth:<home>".
+        var extraCodex: [AgentUsageSnapshot] = []
+        let mainHome = codexHome().standardizedFileURL.path
+        if let extra = ProcessInfo.processInfo.environment["TOKCAT_CODEX_HOMES"] {
+            var seen: Set<String> = [mainHome]
+            for path in extra.split(separator: ":").map(String.init) where !path.isEmpty {
+                let home = URL(fileURLWithPath: path).standardizedFileURL
+                guard seen.insert(home.path).inserted,
+                      CodexQuotaProvider.isConfigured(home: home) else { continue }
+                extraCodex.append(await CodexQuotaProvider.fetch(home: home))
+            }
+        }
+
+        let agents = await [codex, claude, grok, cursor].compactMap { $0 } + extraCodex
         return AgentUsagePayload(generatedAt: generatedAt, agents: agents)
     }
 }

@@ -162,6 +162,19 @@ public enum CodexQuotaProvider {
             atPath: codexHome().appendingPathComponent("auth.json").path)
     }
 
+    /// Whether a specific Codex home (another account) is logged in.
+    public static func isConfigured(home: URL) -> Bool {
+        FileManager.default.fileExists(atPath: home.appendingPathComponent("auth.json").path)
+    }
+
+    /// Limits for another Codex account. Same snapshot as `fetch()`, with
+    /// `source` set to "oauth:<home path>" so callers can tell accounts apart.
+    public static func fetch(home: URL) async -> AgentUsageSnapshot {
+        var snapshot = await CodexHomeOverride.$home.withValue(home) { await fetch() }
+        snapshot.source = "oauth:" + home.path
+        return snapshot
+    }
+
     public static func fetch() async -> AgentUsageSnapshot {
         do {
             return try await fetchInner()
